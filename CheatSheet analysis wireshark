@@ -1,0 +1,55 @@
+📌 Cheatsheet Wireshark – Análisis de tráfico de Malware
+🔹 1. HTTP / HTTPS (básicos)
+http or tls
+
+
+👉 Mostrar todo el tráfico web (HTTP sin cifrar + HTTPS cifrado).
+
+http.request.method == "GET"
+
+
+👉 Localizar todas las peticiones GET (descargas, beaconing).
+
+🔹 2. Handshakes y conexiones iniciales
+tls.handshake.type == 1
+
+
+👉 Mostrar todos los Client Hello (inicio de sesión TLS).
+
+tcp.flags.syn == 1 and tcp.flags.ack == 0
+
+
+👉 Mostrar SYN iniciales (intentos de abrir conexiones TCP).
+
+🔹 3. Filtrar C2 evitando ruido
+
+(ejercicio STRRAT/RedLine)
+
+(http.request or tls.handshake.type eq 1 or (tcp.flags.syn eq 1 and tcp.flags.ack eq 0 and !(ip.dst eq 172.16.1.0/24 or tcp.port eq 443 or tcp.port eq 80))) and !(ssdp)
+
+
+👉 Encuentra conexiones sospechosas excluyendo tráfico legítimo interno (172.16.1.0/24) y puertos comunes (80/443).
+
+tcp.flags eq 0x0002 and !(tcp.port eq 443) and !(tcp.port eq 80) and !(ip.dst eq 10.7.10.0/24)
+
+
+👉 Localiza SYN de C2 evitando tráfico web y direcciones internas.
+
+🔹 4. Identificar Host y Usuario
+nbns
+
+
+👉 Descubre hostname de la víctima vía NetBIOS.
+
+kerberos.CNameString
+
+
+👉 Descubre nombre de usuario de la víctima vía Kerberos.
+
+ldap.AttributeDescription == "givenName"
+
+
+👉 Encuentra nombre real del usuario (si se usa LDAP).
+
+🔹 5. Seguimiento de sesiones sospechosas
+tcp.stream eq N
