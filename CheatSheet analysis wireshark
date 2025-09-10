@@ -47,9 +47,3 @@ kerberos.CNameString
 👉 Descubre nombre de usuario de la víctima vía Kerberos.
 
 ldap.AttributeDescription == "givenName"
-
-
-👉 Encuentra nombre real del usuario (si se usa LDAP).
-
-🔹 5. Seguimiento de sesiones sospechosas
-tcp.stream eq N
