@@ -1,0 +1,134 @@
+🔧 Núcleo universal (vale para casi todo)
+1) SYN externos (ECN-safe)
+
+Detecta aperturas de conexión salientes (candidatos a C2). Ajusta tu(s) rangos LAN.
+
+(tcp.flags.syn == 1 and tcp.flags.ack == 0)
+and !(ip.dst == 10.0.0.0/8 or ip.dst == 172.16.0.0/12 or ip.dst == 192.168.0.0/16)
+
+
+Úsalo: para ver quién toca a Internet.
+Evítalo: si solo quieres web: entonces filtra a 80/443 o añade puertos.
+
+2) SYN no-web (C2 en puertos raros)
+(tcp.flags.syn == 1 and tcp.flags.ack == 0)
+and !(tcp.port == 80 or tcp.port == 443)
+and !(ip.dst == 10.0.0.0/8 or ip.dst == 172.16.0.0/12 or ip.dst == 192.168.0.0/16)
+
+
+Úsalo: para priorizar C2 que no usan 80/443.
+Limita: si el C2 sí usa 80/443 (no saldrá).
+
+3) TCP con datos “no disecados”
+tcp.len > 0 and !(http or tls or ssh or smb2 or ftp or smtp or imap or pop)
+
+
+Úsalo: para encontrar TCP crudo (p. ej., RedLine/STRRAT con net.tcp/WCF).
+Ojo: también verás protocolos poco conocidos; hay que revisar streams.
+
+4) Seguir un flujo sospechoso
+tcp.stream == N and tcp.len > 0
+
+
+Úsalo: lectura clara del payload (beaconing/exfil).
+Opcionales:
+
+tcp.stream == N and tcp.flags.push == 1
+tcp.stream == N and tcp contains "tempuri.org"     # cambia por tu marcador
+
+
+(PSH es “vista rápida”; no todos los stacks lo marcan siempre).
+
+5) Firmas rápidas de exfil de ficheros (hex)
+frame contains 50:4B:03:04     # ZIP/Office (docx/xlsx/pptx)
+frame contains 89:50:4E:47     # PNG
+frame contains FF:D8:FF        # JPEG
+
+
+Úsalo: para cazar capturas/archivos en streams C2.
+
+🌐 Web (HTTP/HTTPS/TLS)
+Web básico
+http or tls
+
+
+Úsalo: timeline de staging (descargas en claro + ClientHello).
+
+GET en claro
+http.request.method == "GET"
+
+TLS – SNI, certificado y JA3 (metadatos)
+tls.handshake.type == 1                              # ClientHello
+tls.handshake.extensions_server_name                 # campo SNI
+tls.handshake.extensions_server_name matches "(?i)(github|maven|pastebin|discord|telegram|dropbox)"
+
+
+Úsalo: cuando todo está cifrado; tiras de metadatos.
+
+HTTP/2 y HTTP/3 (QUIC)
+http2 or (frame contains "PRI * HTTP/2.0")
+quic or http3 or (udp.port == 443 and quic)
+
+DNS cifrado
+tcp.port == 853                 # DoT
+udp.port == 853 and quic        # DoQ
+(http or http2) and frame contains "dns-query"   # DoH
+
+📦 DNS “normal”
+dns
+
+
+Útil para ver dominios → IP del host víctima y pivoteo.
+
+📮 Correo / robo vía email
+smtp or imap or pop
+frame contains "Content-Disposition: attachment"
+
+
+Úsalo: si sospechas exfil por adjuntos/correo.
+
+🖥️ Windows/AD
+nbns                                   # hostname víctima
+kerberos.CNameString                   # usuario
+ldap.AttributeDescription == "givenName"
+
+🗄️ SMB / RDP / SSH
+smb2 and (smb2.cmd == 8 or smb2.cmd == 9)   # READ/WRITE (transferencias)
+rdp or tcp.port == 3389
+ssh
+
+
+Úsalo: exfil lateral a shares o RDP interactivo.
+
+📡 UDP/otros (túneles y tiempo real)
+stun or (udp.port == 3478 or udp.port == 5349)      # WebRTC/STUN
+icmp and frame.len > 100                            # ICMP “grande” (túnel tosco)
+
+🧭 Cuándo usar cada uno (guía rápida)
+
+No sabes por dónde empezar:
+http or tls → mira staging;
++ SYN externos (uno de los filtros 1/2) → candidatos C2.
+
+C2 sospechoso localizado:
+tcp.stream == N and tcp.len > 0 → lee beaconing/exfil;
+marcadores: tcp contains "tempuri.org" / firmas PNG/ZIP.
+
+Todo va cifrado:
+sin payload legible → pivota a TLS/QUIC metadatos (SNI, JA3/horarios), DoH/DoT, dominios desde DNS.
+
+Ves actividad de ficheros o escritorio remoto:
+smb2 (READ/WRITE), rdp, ssh.
+
+Sospecha de correo:
+smtp/imap/pop + Content-Disposition.
+
+Limitaciones (para no frustrarte)
+
+Si el C2 usa 80/443, el filtro “SYN no-web” no lo verá (usa el SYN externo genérico).
+
+PSH no es universal: si no aparece, tira de tcp.len > 0.
+
+Cadenas partidas entre segmentos no casan con * contains "X" por paquete → usa Follow TCP Stream.
+
+QUIC/HTTP3 y gRPC/Protobuf pueden no mostrar strings: apóyate en SNI, destinos, patrones temporales.
