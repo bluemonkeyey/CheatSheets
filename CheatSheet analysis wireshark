@@ -47,3 +47,23 @@ kerberos.CNameString
 👉 Descubre nombre de usuario de la víctima vía Kerberos.
 
 ldap.AttributeDescription == "givenName"
+
+
+EXTRAS PROTOCOLOS NO CIFRADOS --
+Qué cubren bien
+
+tcp.stream == N and tcp.len > 0
+
+    Vale para cualquier C2 sobre TCP (HTTP en claro, TCP crudo tipo RedLine/STRRAT, websockets sin TLS, etc.).
+
+    Te muestra solo paquetes con datos (fuera ACKs), así ves el contenido real (beaconing, órdenes, exfil).
+
+tcp.stream == N and tcp.flags.push == 1
+
+    Útil cuando el canal es interactivo (comando/respuesta) y el stack usa PSH.
+
+    Te deja ver “bloques significativos” de datos.
+
+tcp.stream == N and tcp contains "tempuri.org" (o la cadena que toque)
+
+    Perfecto para marcadores en claro dentro del stream (namespaces, tokens, rutas, etc.).
