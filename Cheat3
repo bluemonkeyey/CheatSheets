@@ -1,0 +1,23 @@
+Filtros básicos
+
+http.request → solicitudes HTTP
+
+tls.handshake.type eq 1 → Client Hello TLS (SNI visible)
+
+(http.request or tls.handshake.type eq 1) and !(ssdp) → tráfico web sin SSDP
+
+Botones de filtro (progresivos)
+
+basic → (http.request or tls.handshake.type eq 1) and !(ssdp)
+
+basic+ → (http.request or tls.handshake.type eq 1 or (tcp.flags.syn eq 1 and tcp.flags.ack eq 0)) and !(ssdp)
+
+basic+dns → (http.request or tls.handshake.type eq 1 or (tcp.flags.syn eq 1 and tcp.flags.ack eq 0) or dns) and !(ssdp)
+
+Protocolos / casos
+
+FTP → ftp (control), ftp-data (datos), ftp.request.command or (ftp-data and tcp.seq eq 1)
+
+SMTP/Spambot → smtp or dns · comandos: smtp.req.command · contenido: smtp.data.fragment
+
+RAT/C2 → usar basic+dns, mirar DNS sospechoso + SYN a puertos raros
