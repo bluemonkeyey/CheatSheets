@@ -67,3 +67,125 @@ tcp.stream == N and tcp.flags.push == 1
 tcp.stream == N and tcp contains "tempuri.org" (o la cadena que toque)
 
     Perfecto para marcadores en claro dentro del stream (namespaces, tokens, rutas, etc.).
+
+/////////////////////////ANALISIS DE VECTOR DE ENTRADA///////////////////////////
+
+2) Filtros recomendados (Wireshark display filters) — empeza por éstos
+A — Descargas explícitas de binarios por HTTP (GET/HEAD responses con nombres de archivo)
+(http.request.method == "GET" or http.request.method == "HEAD") and http.request.uri matches "\.(exe|dll|msi|ps1|vbs|hta|zip|7z|cab|scr|bat|cmd)$"
+
+
+Qué busca: URIs que terminan en extensiones ejecutables/paquete.
+Si aparece: exporta objeto HTTP y calcula hash inmediatamente.
+
+B — URIs que contienen extensiones en el path o parámetros (más amplio)
+(http.request.uri contains ".exe" or http.request.uri contains ".dll" or http.request.uri contains ".msi" or http.request.uri contains ".ps1" or http.request.uri contains ".zip" or http.request.uri contains ".7z")
+
+
+Qué busca: casos ofuscados dentro de parámetros.
+
+C — Respuestas HTTP con Content-Type indicando binario y tamaño
+http.content_type matches "application|octet-stream|x-msdownload|binary" or (http.content_length > 100000)
+
+
+Qué busca: descargas binarios grandes (umbral ajustable). Si hay content_type: application/octet-stream suele ser fichero descargado.
+
+D — POSTs/PUTs (posible exfiltración)
+http.request.method == "POST" or http.request.method == "PUT"
+
+
+Qué busca: si hubo subida de datos. Si hay POST con multipart/form-data o grandes Content-Length, extráelo.
+
+E — User-Agents sospechosos (PowerShell, Python, curl)
+http.user_agent matches "(?i)PowerShell|Invoke-WebRequest|IWR|python-requests|urllib|curl|wget|libwww-perl|Go-http-client"
+
+
+Qué busca: programas automatizados que suelen ejecutar payloads tras phishing.
+
+F — TLS: SNI que no sea conocido / conexiones TLS a IPs no habituales
+tls.handshake.extensions_server_name and !(tls.handshake.extensions_server_name contains "microsoft" or tls.handshake.extensions_server_name contains "office" or tls.handshake.extensions_server_name contains "google" or tls.handshake.extensions_server_name contains "microsoftonline" or tls.handshake.extensions_server_name contains "amazonaws" or tls.handshake.extensions_server_name contains "cloudflare" or tls.handshake.extensions_server_name contains "mozilla")
+
+
+Qué busca: conexiones TLS a dominios no esperados que sobresalen entre ruido de updates/CDN.
+
+G — DNS: nombres raros o recién creados (filtros para revisar manualmente)
+dns && !(dns.qry.name contains "microsoft" or dns.qry.name contains "office" or dns.qry.name contains "mozilla" or dns.qry.name contains "google" or dns.qry.name contains "apple")
+
+
+Qué busca: queries DNS que no sean de infra conocida.
+
+H — TCP SYN repetitivo (beaconing)
+tcp.flags.syn == 1 && tcp.flags.ack == 0
+
+
+Seguido de: agrupar por dst IP para ver patrones periódicos.
+
+I — SMB/Windows file transfer (si red interna)
+smb2 || smb || smb.cmd == 0x75  # (ajusta en Wireshark GUI según versión)
+
+
+Qué busca: transferencias de archivos por SMB (vector lateral o entrega de payload).
+
+J — QUIC/HTTP/2 trafic (modern browser / CDNs) — buscar streams con executables
+http2 or quic
+
+
+Seguido por: inspeccionar http2.headers o quic frames para URIs/paths.
+
+3) Comandos tshark / shell para extraer artefactos y generar CSVs (automatizable)
+3.1 Extraer GETs con host, uri, time, user-agent, response code
+tshark -r capture.pcap -Y 'http.request' -T fields \
+  -e frame.number -e frame.time_epoch -e ip.src -e ip.dst -e http.host -e http.request.full_uri -e http.user_agent -e http.request.method -e http.response.code \
+  > http_requests.tsv
+
+3.2 Exportar objetos HTTP (archivos descargados)
+tshark -r capture.pcap --export-objects http,./http_objects
+# Luego calcular hashes:
+for f in http_objects/*; do sha256sum "$f"; done > http_objects_hashes.txt
+
+3.3 Extraer DNS queries + answers (ordenadas por time)
+tshark -r capture.pcap -Y 'dns.qry.name' -T fields -e frame.time_epoch -e ip.src -e ip.dst -e dns.qry.name -e dns.qry.type -e dns.resp.addr | sort -k1n > dns_queries.tsv
+
+3.4 Extraer TLS SNI (Client Hello)
+tshark -r capture.pcap -Y 'tls.handshake.type == 1' -T fields -e frame.time_epoch -e ip.src -e ip.dst -e tls.handshake.extensions_server_name > tls_sni.tsv
+
+3.5 Buscar User-Agents sospechosos rápidamente
+grep -i -E 'PowerShell|python-requests|curl|wget|Go-http-client|libwww-perl|IEX' http_requests.tsv | cut -f1-8
+
+3.6 Búsqueda de URIs con extensiones ejecutables
+awk -F'\t' '{ if ($6 ~ /\.(exe|dll|msi|ps1|vbs|hta|zip|7z|cab|scr|bat|cmd)$/) print $0 }' http_requests.tsv > suspicious_uri_hits.tsv
+
+4) Correlación obligatoria con el endpoint (qué comparar y cómo)
+
+Timestamps: cruza http_requests.tsv y tls_sni.tsv con el timeCreated del Application.evtx / Velociraptor triage (ejecuta join por timestamp ±2 min).
+
+Prefetch / MFT: buscar nombres de ejecutables encontrados en http_objects_hashes.txt dentro del MFT/PREFETCH para confirmar ejecución.
+
+MsiInstaller / EventID 1000 / CreationTime de archivos: si MsiInstaller aparece cerca del hash/archivo descargado → vector probable.
+
+$Recycle.Bin y rutas Temp/AppData: si objetos extraídos aparecen ahí, marca como evidencia de intento de eliminar.
+
+5) Señales de “ejecución inmediata” que mirar en red
+
+Descarga seguida de conexión a IPs nuevas en segundos/minutos → el binario se ejecutó y abrió C2.
+
+Arranque de PowerShell remota (si ves User-Agent de PowerShell o conexiones a servicios de gestión remota).
+
+Resoluciones DNS a dominios dinámicos o DGAs poco después de la descarga.
+
+Tráfico cifrado persistente hacia IPs no conocidas (posible beaconing).
+
+Tráfico SMB o WMI remota tras la descarga (movimiento lateral).
+
+6) Filtros “combinados” listos para pegar en Wireshark
+Combinado 1 — Descargas de ejecutables con UA no estándar
+(http.request and (http.request.uri matches "\.(exe|dll|msi|ps1|hta|zip|7z|cab|scr|bat|cmd)$" or http.request.uri contains ".exe" or http.content_type contains "octet-stream")) and (http.user_agent matches "(?i)PowerShell|python|curl|wget|Go-http-client|libwww-perl")
+
+Combinado 2 — Actividad inmediata post-descarga (descarga seguida de SYN hacia IP no-MS dentro de 60s)
+
+(No se puede expresar en un solo display filter; ejecutar búsqueda en tshark y luego script para correlacionar timestamps)
+
+Extrae descargas (con tiempo t0), luego busca SYNs desde host a IPs distintas al CDN en t0..t0+60s.
+
+Combinado 3 — DNS sospechoso + TLS SNI no-MS
+(dns.qry.name and !(dns.qry.name contains "microsoft" or dns.qry.name contains "office" or dns.qry.na
